@@ -7,7 +7,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
-import org.hibernate.Session;
+//import org.hibernate.Session;
 
 import labs.lab3_game.Message.MessageHandler;
 
@@ -35,6 +35,8 @@ public class MyServer {
   public ServerMessageHandler messageHandler = new ServerMessageHandler(this);
   public ClientHandler[] clients = new ClientHandler[] {null, null, null, null};
   public Thread gameThread;
+
+  private DBManager db;
 
   private static class ServerMessageHandler extends MessageHandler {
     private MyServer server;
@@ -73,7 +75,10 @@ public class MyServer {
       if (slotsLeft == 0) {
         return new Message.Reject(Message.Reject.GAME_FULL).generateByteMessage();
       }
-      return new Message.Connect(freeSlot, message.name.clone()).generateByteMessage();
+      server.db.registerPlayer(name);
+      int wins = server.db.getPlayerWins(name);
+      // return new Message.Connect(freeSlot, wins, message.name.clone()).generateByteMessage();
+      return new Message.Connect(freeSlot, wins, name.getBytes()).generateByteMessage();
     }
 
     @Override
@@ -143,6 +148,15 @@ public class MyServer {
       setPauseUnpause(message.slot, (byte)0, message.generateByteMessage());
       return null;
     }
+
+    @Override
+    public byte[] handleLeaderBoardPrepare(Message.LeaderBoardPrepare message) {
+      MyUtils.PlayerWinsArray arr = server.db.getLeaderBoard();
+      int message_size = 5 + arr.arr.length * MyUtils.PlayerWins.bytes_size;
+      server.sendMessage(message.slot, new Message.LeaderBoardPrepare(message.slot, message_size).generateByteMessage());
+      server.sendMessage(message.slot, new Message.LeaderBoardSend(message_size, arr).generateByteMessage());
+      return null;
+    }
   }
 
   private static class ClientHandler extends Thread {
@@ -153,10 +167,11 @@ public class MyServer {
     private byte slot = 0;
     private byte ready = 0;
     private byte pause = 0;
+    private int wins = 0;
     public boolean shootingState = false;
     public DataOutputStream dOut;
     public DataInputStream dInp;
-    public Session session;
+    //public Session session;
 
     ClientHandler(Socket socket, MyServer s) {
       clientSocket = socket;
@@ -187,8 +202,9 @@ public class MyServer {
         Message.Connect clientInfo = new Message.Connect(response);
         slot = clientInfo.slot;
         name = new String(clientInfo.name, StandardCharsets.UTF_8);
+        wins = clientInfo.wins;
         server.addPlayer(slot, this);
-        session = HibernateSessionFactoryUtil.getSessionFactory().openSession();
+        //session = HibernateSessionFactoryUtil.getSessionFactory().openSession();
         boolean flag = true;
         while (flag) {
           try {
@@ -212,7 +228,7 @@ public class MyServer {
         e.printStackTrace();
       }
       server.deletePlayer(slot);
-      session.close();
+      //session.close();
     }
   }
 
@@ -229,6 +245,8 @@ public class MyServer {
     gamePaneWidth = FakeServerApp.controller.gamePaneWidth;
     resetSync();
     serverSocket = new ServerSocket(Config.port);
+    db = new DBManager();
+    db.connect();
     while (true) {
       new ClientHandler(serverSocket.accept(), this).start();
     }
@@ -248,10 +266,10 @@ public class MyServer {
       for (int i = 0; i < clients.length; i++) {
         if (clients[i] != null) {
           if (i != slot) {
-            //clients[i].sendMessage(new Message.Connect(handler.slot, handler.name.getBytes()).generateByteMessage());
-            sendMessage((byte)i, new Message.Connect(handler.slot, handler.name.getBytes()).generateByteMessage());
+            //clients[i].sendMessage(new Message.Connect(handler.slot, handler.wins, handler.name.getBytes()).generateByteMessage());
+            sendMessage((byte)i, new Message.Connect(handler.slot, handler.wins, handler.name.getBytes()).generateByteMessage());
           }
-          dOut.write(new Message.Connect(clients[i].slot, clients[i].name.getBytes()).generateByteMessage());
+          dOut.write(new Message.Connect(clients[i].slot, clients[i].wins, clients[i].name.getBytes()).generateByteMessage());
         }
       }
     } catch (IOException e) {
@@ -305,6 +323,7 @@ public class MyServer {
         case Message.PLAYER_WON:
         case Message.PAUSE:
         case Message.UNPAUSE:
+        case Message.LEADER_BOARD_PREPARE:
           message[1] = slot;
           break;
       }
@@ -318,6 +337,10 @@ public class MyServer {
       gameIsGoing = false;
       gameIsPaused = false;
       sendToAllPlayers(new Message.PlayerWon(slot).generateByteMessage());
+      if (clients[slot] != null) {
+        db.incrementPlayerWins(clients[slot].name);
+        clients[slot].wins++;
+      }
       for (int i = 0; i < clients.length; i++) {
         if (clients[i] != null) {
           clients[i].ready = 0;

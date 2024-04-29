@@ -11,11 +11,13 @@ import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
 import javafx.fxml.FXML;
+import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Group;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.VBox;
 import javafx.scene.layout.HBox;
@@ -30,6 +32,8 @@ import javafx.stage.Modality;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 import labs.lab3_game.Message.MessageHandler;
+import labs.lab3_game.MyUtils.PlayerWins;
+import labs.lab3_game.MyUtils.PlayerWinsArray;
 
 public class PrimaryController {
 
@@ -134,11 +138,20 @@ public class PrimaryController {
   @FXML
   private Button PauseBtn;
 
+  @FXML
+  private Button ShowLeaderBoardBtn;
+
   private boolean isPaused = false;
 
   private boolean isReady = false;
 
   private boolean isGameGoing = false;
+
+  private boolean waitingForLeaderBoard = false;
+
+  private boolean receivingLeaderBoard = false;
+
+  private Thread serverListenThread = null;
 
   private ClientMessageHandler clientMessageHandler = new ClientMessageHandler(this);
   
@@ -189,7 +202,7 @@ public class PrimaryController {
         return null;
       Platform.runLater(() -> {
         controller.initialize_prepare();
-        controller.addPlayer(message.slot, new String(message.name, StandardCharsets.UTF_8));
+        controller.addPlayer(message.slot, message.wins, new String(message.name, StandardCharsets.UTF_8));
       });
       return null;
     }
@@ -298,7 +311,51 @@ public class PrimaryController {
         controller.player_unpaused(message.slot);
       });
       return null;
-    } 
+    }
+
+    @Override
+    public byte[] handleLeaderBoardPrepare(Message.LeaderBoardPrepare message) {
+      if (controller.waitingForLeaderBoard) {
+        controller.receivingLeaderBoard = true;
+        new Thread(() -> {
+          byte[] buffer = new byte[message.message_size > Message.messageMaxSize ? message.message_size : Message.messageMaxSize];
+          boolean flag = true;
+          while (flag) {
+            try {
+              int ret = controller.dInp.read(buffer, 0, buffer.length);
+              if (ret == -1) {
+                flag = false;
+              }
+            } catch (IOException e) {
+              e.printStackTrace();
+              flag = false;
+            }
+            System.out.println(buffer[0]);
+            if (buffer[0] == Message.LEADER_BOARD_SEND) {
+              flag = false;
+            }
+            controller.clientMessageHandler.handleMessage(buffer, Message.GENERIC);
+            buffer[0] = Message.GENERIC;
+          }
+          controller.waitingForLeaderBoard = false;
+          controller.receivingLeaderBoard = false;
+          synchronized (controller) {
+            controller.notify();
+          }
+        }).start();
+      }
+      return null;
+    }
+
+    @Override
+    public byte[] handleLeaderBoardSend(Message.LeaderBoardSend message) {
+      if (controller.waitingForLeaderBoard && controller.receivingLeaderBoard) {
+        Platform.runLater(() -> {
+          controller.createLeaderBoard(message.arr);
+        });
+      }
+      return null;
+    }
   }
 
   private void initialize_dynamic_pos() {
@@ -324,6 +381,7 @@ public class PrimaryController {
 
   private void initialize_start() {
     resetScore();
+    serverListenThread = null;
     for (int i = 0; i < PlayerCircles.length; i++) {
       PlayerCircles[i].setVisible(false);
       Fingers[i].setVisible(false);
@@ -341,6 +399,7 @@ public class PrimaryController {
     buttonSetTrueVisibility(ReadyBtn, false);
     buttonSetTrueVisibility(ShootBtn, false);
     buttonSetTrueVisibility(PauseBtn, false);
+    buttonSetTrueVisibility(ShowLeaderBoardBtn, false);
   }
 
   private void initialize_prepare() {
@@ -350,6 +409,7 @@ public class PrimaryController {
     buttonSetTrueVisibility(ReadyBtn, true);
     buttonSetTrueVisibility(ShootBtn, false);
     buttonSetTrueVisibility(PauseBtn, false);
+    buttonSetTrueVisibility(ShowLeaderBoardBtn, true);
   }
 
   public void initialize_game() {
@@ -364,6 +424,7 @@ public class PrimaryController {
     buttonSetTrueVisibility(ReadyBtn, false);
     buttonSetTrueVisibility(ShootBtn, true);
     buttonSetTrueVisibility(PauseBtn, true);
+    buttonSetTrueVisibility(ShowLeaderBoardBtn, true);
   }
 
   @FXML
@@ -470,13 +531,15 @@ public class PrimaryController {
     return new Image(PrimaryController.class.getResource(path).toString());
   }
 
-  public void addPlayer(byte slot, String name) {
+  public void addPlayer(byte slot, int wins, String name) {
     PlayerCircles[slot].setVisible(true);
     Fingers[slot].setVisible(false);
     Hands[slot].setVisible(false);
     ScoreFramesPlayer[slot].setVisible(true);
     Label playerNameLabel = (Label)ScoreFramesPlayer[slot].getChildren().get(2);
     playerNameLabel.setText(name);
+    Label playerWinsLabel = (Label)ScoreFramesPlayer[slot].getChildren().get(8);
+    playerWinsLabel.setText("" + wins);
     ArrowPolys[slot].setTranslateX(0);
     ArrowPolys[slot].setVisible(false);
   }
@@ -524,6 +587,8 @@ public class PrimaryController {
   public void declare_winner(byte slot) {
     initialize_prepare();
     Label playerNameLabel = (Label)ScoreFramesPlayer[slot].getChildren().get(2);
+    Label playerWinsLabel = (Label)ScoreFramesPlayer[slot].getChildren().get(8);
+    playerWinsLabel.setText("" + (Integer.parseInt(playerWinsLabel.getText()) + 1));
     for (int i = 0; i < PlayerCircles.length; i++) {
       unreadyPlayer((byte)i);
     }
@@ -630,11 +695,20 @@ public class PrimaryController {
       }
       dOut = new DataOutputStream(socket.getOutputStream());
       dInp = new DataInputStream(socket.getInputStream());
-      dOut.write(new Message.Connect(Integer.valueOf(posField.getText()).byteValue(), nameField.getText().getBytes()).generateByteMessage());
-      new Thread(() -> {
+      dOut.write(new Message.Connect(Integer.valueOf(posField.getText()).byteValue(), 0, nameField.getText().getBytes()).generateByteMessage());
+      serverListenThread = new Thread(() -> {
         byte[] message = new byte[Message.messageMaxSize];
         boolean flag = true;
         while (flag) {
+          if (receivingLeaderBoard) {
+            try {
+              synchronized(this) {
+                this.wait();
+              }
+            } catch (InterruptedException e) {
+              e.printStackTrace();
+            }
+          }
           try {
             int ret = dInp.read(message, 0, message.length);
             if (ret == -1) {
@@ -653,7 +727,8 @@ public class PrimaryController {
           clientMessageHandler.handleMessage(message, Message.GENERIC);
           message[0] = Message.GENERIC;
         }
-      }).start();
+      });
+      serverListenThread.start();
     } catch (IOException e) {
       port = 0;
       if (socket != null) {
@@ -682,7 +757,44 @@ public class PrimaryController {
     if (window == null)
       dialog.initOwner(MainFrame.getScene().getWindow());
     else
-    dialog.initOwner(window);
+      dialog.initOwner(window);
+    dialog.initModality(Modality.APPLICATION_MODAL);
+    dialog.showAndWait();
+  }
+
+  public void createLeaderBoard(PlayerWinsArray arr) {
+    final double nameColumnWidth = Config.name_max_length * 6;
+    Stage dialog = new Stage();
+    VBox mainBox = new VBox();
+    mainBox.setAlignment(Pos.CENTER);
+    HBox header = new HBox();
+    header.getChildren().add(new Label("Имя"));
+    ((Label)header.getChildren().get(0)).setPrefWidth(nameColumnWidth);
+    header.getChildren().add(new Separator(Orientation.VERTICAL));
+    header.getChildren().add(new Label("Победы"));
+    ((Label)header.getChildren().get(2)).setPrefWidth(nameColumnWidth);
+    mainBox.getChildren().add(header);
+    mainBox.getChildren().add(new Separator(Orientation.HORIZONTAL));
+    for (PlayerWins player : arr.arr) {
+      HBox row = new HBox();
+      row.getChildren().add(new Label(player.name));
+      ((Label)row.getChildren().get(0)).setPrefWidth(nameColumnWidth);
+      row.getChildren().add(new Separator(Orientation.VERTICAL));
+      row.getChildren().add(new Label("" + player.wins));
+      ((Label)row.getChildren().get(2)).setPrefWidth(nameColumnWidth);
+      mainBox.getChildren().add(row);
+      mainBox.getChildren().add(new Separator(Orientation.HORIZONTAL));
+    }
+    Button okButton = new Button();
+    okButton.setText("Закрыть");
+    okButton.setOnAction(value -> {
+      dialog.close();
+    });
+    mainBox.getChildren().add(okButton);
+    Group dialogGroup = new Group();
+    dialogGroup.getChildren().add(mainBox);
+    dialog.setScene(new Scene(dialogGroup));
+    dialog.initOwner(MainFrame.getScene().getWindow());
     dialog.initModality(Modality.APPLICATION_MODAL);
     dialog.showAndWait();
   }
@@ -714,6 +826,15 @@ public class PrimaryController {
       PauseBtn.setText("Продолжить");
     }
     isPaused = !isPaused;
+  }
+
+  @FXML
+  private void showLeaderBoard() {
+    if (waitingForLeaderBoard || serverListenThread == null || port == 0) {
+      return;
+    }
+    waitingForLeaderBoard = true;
+    sendMessage(new Message.LeaderBoardPrepare((byte)0, 0).generateByteMessage());
   }
 
   public synchronized void sendMessage(byte[] msg) {

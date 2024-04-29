@@ -18,6 +18,8 @@ public class Message {
   public final static byte PLAYER_WON = 10; // byte_slot
   public final static byte PAUSE = 11; // byte_slot
   public final static byte UNPAUSE = 12; // byte_slot
+  public final static byte LEADER_BOARD_PREPARE = 13; // int message_bytes_size
+  public final static byte LEADER_BOARD_SEND = 14; // int bytes_size, [bytes_name[24], int wins, ...]
 
   public static class MessageHandler {
     byte[] handleMessage(byte[] msg, byte expect) {
@@ -73,6 +75,14 @@ public class Message {
           if (expect == GENERIC || expect == UNPAUSE)
             return handleUnpause(new Unpause(msg));
           break;
+        case LEADER_BOARD_PREPARE:
+          if (expect == GENERIC || expect == LEADER_BOARD_PREPARE)
+            return handleLeaderBoardPrepare(new LeaderBoardPrepare(msg));
+          break;
+        case LEADER_BOARD_SEND:
+          if (expect == GENERIC || expect == LEADER_BOARD_SEND)
+            return handleLeaderBoardSend(new LeaderBoardSend(msg));
+          break;
       }
       return null;
     }
@@ -88,6 +98,8 @@ public class Message {
     public byte[] handlePlayerWon(PlayerWon message) { return null; }
     public byte[] handlePause(Pause message) { return null; }
     public byte[] handleUnpause(Unpause message) { return null; }
+    public byte[] handleLeaderBoardPrepare(LeaderBoardPrepare message) { return null; }
+    public byte[] handleLeaderBoardSend(LeaderBoardSend message) { return null; }
   }
 
   public static class Generic {
@@ -136,11 +148,13 @@ public class Message {
 
   public static class Connect extends Generic {
     protected byte slot;
+    protected int wins;
     protected byte[] name;
 
-    Connect(byte slot, byte[] name) {
+    Connect(byte slot, int wins, byte[] name) {
       super();
       this.slot = slot;
+      this.wins = wins;
       this.name = name;
     }
 
@@ -150,7 +164,7 @@ public class Message {
 
     @Override
     public int getGoodMsgSize() {
-      return 1 + Config.name_max_length;
+      return 5 + Config.name_max_length;
     }
 
     @Override
@@ -167,9 +181,10 @@ public class Message {
       }
       ByteBuffer buffer = ByteBuffer.wrap(msg);
       slot = buffer.get(offset);
+      wins = buffer.getInt(offset + 1);
       name = new byte[Config.name_max_length];
-      for (int i = offset + 1; i < getGoodMsgSize()+offset; i++) {
-        name[i - offset - 1] = buffer.get(i);
+      for (int i = offset + 5; i < getGoodMsgSize() + offset; i++) {
+        name[i - offset - 5] = buffer.get(i);
       }
     }
 
@@ -182,6 +197,7 @@ public class Message {
       ByteBuffer message = ByteBuffer.allocate(messageMaxSize);
       message.put(CONNECT);
       message.put(slot);
+      message.putInt(wins);
       message.put(name);
       return message.array();
     }
@@ -664,6 +680,107 @@ public class Message {
       message[0] = UNPAUSE;
       message[1] = slot;
       return message;
+    }
+  }
+
+  public static class LeaderBoardPrepare extends Generic {
+    protected byte slot;
+    protected int message_size;
+
+    LeaderBoardPrepare(byte slot, int message_size) {
+      super();
+      this.slot = slot;
+      this.message_size = message_size;
+    }
+
+    LeaderBoardPrepare(byte[] msg) {
+      super(msg);
+    }
+
+    @Override
+    public int getGoodMsgSize() {
+      return 6;
+    }
+
+    @Override
+    public void checkFirstByte(byte[] msg) {
+      if (!isGood() || msg[0] != LEADER_BOARD_PREPARE) {
+        setBad();
+      }
+    }
+
+    @Override
+    public void interpretBuffer(byte[] msg, int offset) {
+      if (!isGood()) {
+        return;
+      }
+      ByteBuffer buffer = ByteBuffer.wrap(msg);
+      slot = buffer.get(offset);
+      message_size = buffer.getInt(offset + 1);
+    }
+
+    @Override
+    public byte[] generateByteMessage() {
+      if (!isGood()) {
+        return new byte[messageMaxSize];
+      }
+      ByteBuffer message = ByteBuffer.allocate(messageMaxSize);
+      message.put(LEADER_BOARD_PREPARE);
+      message.put(slot);
+      message.putInt(message_size);
+      return message.array();
+    }
+  }
+
+  public static class LeaderBoardSend extends Generic {
+    protected int message_size;
+    protected MyUtils.PlayerWinsArray arr;
+
+    LeaderBoardSend(int message_size, MyUtils.PlayerWinsArray arr) {
+      super();
+      this.message_size = message_size;
+      this.arr = arr;
+    }
+
+    LeaderBoardSend(byte[] msg) {
+      super(msg);
+    }
+
+    @Override
+    public int getGoodMsgSize() {
+      // That one is hard
+      return 5;
+    }
+
+    @Override
+    public void checkFirstByte(byte[] msg) {
+      if (!isGood() || msg[0] != LEADER_BOARD_SEND) {
+        setBad();
+      }
+    }
+
+    @Override
+    public void interpretBuffer(byte[] msg, int offset) {
+      if (!isGood()) {
+        return;
+      }
+      ByteBuffer buffer = ByteBuffer.wrap(msg);
+      message_size = buffer.getInt(offset);
+      //arr = new MyUtils.PlayerWinsArray(msg, offset + 4, message_size * MyUtils.PlayerWins.bytes_size);
+      arr = new MyUtils.PlayerWinsArray(msg, offset + 4, message_size - offset - 4);
+    }
+
+    @Override
+    public byte[] generateByteMessage() {
+      if (!isGood()) {
+        return new byte[messageMaxSize];
+      }
+      //ByteBuffer message = ByteBuffer.allocate(5 + message_size * MyUtils.PlayerWins.bytes_size);
+      ByteBuffer message = ByteBuffer.allocate(message_size);
+      message.put(LEADER_BOARD_SEND);
+      message.putInt(message_size);
+      message.put(arr.generateBytes());
+      return message.array();
     }
   }
 }
