@@ -89,6 +89,11 @@ public class MyUtils {
       this.name = new String(nameBuffer, StandardCharsets.UTF_8);
     }
 
+    public PlayerWins(PlayerDB p) {
+      wins = p.wins;
+      name = p.name;
+    }
+
     public byte[] generateBytes() {
       byte[] bytes = new byte[bytes_size];
       ByteBuffer buffer = ByteBuffer.wrap(bytes);
