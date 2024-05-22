@@ -42,7 +42,8 @@ public class DBManager {
 
   public MyUtils.PlayerWinsArray getLeaderBoard() {
     MyUtils.PlayerWinsArray arr = null;
-    List<PlayerDB> players = (List<PlayerDB>)session.openSession().createQuery("FROM labs.lab3_game.PlayerDB").list();
+    Session s = session.openSession();
+    List<PlayerDB> players = (List<PlayerDB>)s.createQuery("FROM labs.lab3_game.PlayerDB").list();
     int sz = players.size();
     arr = new MyUtils.PlayerWinsArray(sz);
     int i = 0;
@@ -50,6 +51,7 @@ public class DBManager {
       arr.arr[i] = new MyUtils.PlayerWins(p);
       i++;
     }
+    s.close();
     return arr;
   }
 
